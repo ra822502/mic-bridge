@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#101826">
+<title>مايك الماب</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#101826; --panel:#182236; --line:#27344d; --text:#e8edf6; --mute:#8fa0bd;
+    --ok:#4ade80; --warn:#fbbf24; --bad:#f87171; --accent:#7dd3fc;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:"IBM Plex Sans Arabic",system-ui,-apple-system,"Segoe UI",Tahoma,sans-serif;
+    display:flex; align-items:center; justify-content:center;
+    padding:max(16px,env(safe-area-inset-top)) 16px max(16px,env(safe-area-inset-bottom));
+  }
+  main{width:100%; max-width:420px}
+  h1{font-size:1.35rem; margin:0 0 .25rem; font-weight:700}
+  p{margin:.4rem 0; line-height:1.7; color:var(--mute)}
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:20px}
+  .who{margin:14px 0; padding:12px 14px; border:1px dashed var(--line); border-radius:10px; color:var(--text)}
+  .who b{font-weight:700}
+  button{
+    width:100%; margin-top:12px; padding:14px; border:0; border-radius:10px; cursor:pointer;
+    font:inherit; font-weight:700; font-size:1rem; background:var(--accent); color:#06223a;
+  }
+  button:focus-visible{outline:3px solid #fff; outline-offset:2px}
+  button:disabled{opacity:.5; cursor:default}
+  .err{color:var(--bad)}
+  .hidden{display:none!important}
+
+  /* لوحة التحكم */
+  .stage{display:flex; gap:18px; align-items:stretch; margin:16px 0 8px}
+  .meter{width:34px; min-height:150px; border-radius:10px; background:#0c1322; border:1px solid var(--line); position:relative; overflow:hidden}
+  .meter i{position:absolute; inset:auto 0 0 0; height:0%; background:linear-gradient(to top,var(--ok),var(--warn) 70%,var(--bad)); transition:height .08s linear}
+  .meter.off i{background:#33415e}
+  .status{flex:1; display:flex; flex-direction:column; justify-content:center; gap:6px}
+  .chip{display:inline-block; padding:4px 12px; border-radius:99px; font-weight:700; font-size:.95rem; width:fit-content}
+  .chip.on{background:rgba(74,222,128,.15); color:var(--ok)}
+  .chip.off{background:rgba(248,113,113,.15); color:var(--bad)}
+  ul{list-style:none; margin:10px 0 0; padding:0}
+  li{display:flex; align-items:center; gap:10px; padding:8px 0; border-top:1px solid var(--line); font-size:.95rem}
+  li span.n{flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  li span.v{width:64px; height:6px; border-radius:3px; background:#0c1322; overflow:hidden}
+  li span.v i{display:block; height:100%; background:var(--accent); width:0%}
+  .small{font-size:.85rem}
+</style>
+</head>
+<body>
+<main>
+  <section id="s-none" class="card hidden">
+    <h1>مايك الماب</h1>
+    <p>افتح هذه الصفحة من الرابط اللي يطلع لك داخل اللعبة. اضغط زر المايك في الماب وانسخ الرابط.</p>
+  </section>
+
+  <section id="s-link" class="card hidden">
+    <h1>ربط حساب روبلوكس</h1>
+    <p>الرابط جاي من اللعبة، وهذا الحساب اللي طلبه:</p>
+    <div class="who" id="who">…</div>
+    <button id="btn-bind">ربط الحساب</button>
+    <p id="e-link" class="err"></p>
+  </section>
+
+  <section id="s-mic" class="card hidden">
+    <h1>تفعيل المايك</h1>
+    <p>تم ربط الحساب. المتصفح بيطلب إذن المايك، اضغط سماح.</p>
+    <button id="btn-mic">تفعيل المايك</button>
+    <p id="e-mic" class="err"></p>
+  </section>
+
+  <section id="s-live" class="card hidden">
+    <h1>المايك شغال</h1>
+    <p class="small">اترك هذه الصفحة مفتوحة، وافتح وأقفل المايك من الزر داخل اللعبة.</p>
+    <div class="stage">
+      <div class="meter off" id="meter"><i id="meter-i"></i></div>
+      <div class="status">
+        <span class="chip off" id="chip">مقفل</span>
+        <span class="small" id="me" style="color:var(--mute)"></span>
+      </div>
+    </div>
+    <ul id="peers"></ul>
+    <p class="small" id="no-peers">ما فيه أحد قريب منك الحين.</p>
+  </section>
+
+  <section id="s-err" class="card hidden">
+    <h1>انقطع الاتصال</h1>
+    <p id="e-fatal" class="err"></p>
+  </section>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const show = (id) => { document.querySelectorAll('main > section').forEach(s => s.classList.add('hidden')); $(id).classList.remove('hidden'); };
+  const token = new URLSearchParams(location.search).get('t');
+  let clientId = localStorage.getItem('mb_cid');
+  if (!clientId) {
+    clientId = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2) + Date.now());
+    localStorage.setItem('mb_cid', clientId);
+  }
+
+  let ws, me, iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+  let ctx, stream, track, analyser, active = false;
+  const peers = new Map(); // id -> {pc, gain, el, src, q, last, name}
+
+  /* ---------- الشاشات ---------- */
+  async function init() {
+    if (!token) return show('s-none');
+    try {
+      const r = await fetch('/api/link/' + encodeURIComponent(token));
+      if (!r.ok) throw 0;
+      const j = await r.json();
+      $('who').innerHTML = '<b></b> <span style="color:var(--mute)"></span>';
+      $('who').firstChild.textContent = j.displayName || j.name;
+      $('who').lastChild.textContent = '@' + j.name;
+      show('s-link');
+    } catch {
+      fatal('الرابط غير صالح أو انتهى. اضغط زر المايك في اللعبة وخذ رابط جديد.');
+    }
+  }
+  function fatal(msg) {
+    $('e-fatal').textContent = msg; show('s-err'); cleanup();
+  }
+
+  /* ---------- الاتصال ---------- */
+  $('btn-bind').onclick = async () => {
+    $('btn-bind').disabled = true; $('e-link').textContent = '';
+    try { const r = await fetch('/api/ice'); iceServers = (await r.json()).iceServers; } catch {}
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(`${proto}://${location.host}/ws`);
+    ws.onopen = () => ws.send(JSON.stringify({ type: 'bind', token, clientId }));
+    ws.onmessage = (e) => onMsg(JSON.parse(e.data));
+    ws.onclose = () => { if (!$('s-err').classList.contains('hidden')) return; if (me) fatal('انقطع الاتصال بالسيرفر. حدّث الصفحة.'); };
+    ws.onerror = () => { $('e-link').textContent = 'تعذر الاتصال بالسيرفر.'; $('btn-bind').disabled = false; };
+  };
+  const wsend = (o) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); };
+
+  function onMsg(m) {
+    if (m.type === 'bound') { me = m; $('me').textContent = m.displayName || m.name; show('s-mic'); }
+    else if (m.type === 'error') { if (m.fatal) fatal(m.msg); }
+    else if (m.type === 'state') onState(m);
+    else if (m.type === 'signal') onSignal(m.from, m.data);
+  }
+
+  /* ---------- المايك ---------- */
+  $('btn-mic').onclick = async () => {
+    $('btn-mic').disabled = true; $('e-mic').textContent = '';
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false
+      });
+    } catch {
+      $('e-mic').textContent = 'ما قدرنا نوصل للمايك. اسمح للموقع باستخدام المايك من إعدادات المتصفح ثم جرّب مرة ثانية.';
+      $('btn-mic').disabled = false; return;
+    }
+    track = stream.getAudioTracks()[0];
+    track.enabled = false;
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    await ctx.resume();
+    analyser = ctx.createAnalyser(); analyser.fftSize = 512;
+    ctx.createMediaStreamSource(new MediaStream([track])).connect(analyser);
+    startMeter();
+    try { navigator.wakeLock && navigator.wakeLock.request('screen'); } catch {}
+    wsend({ type: 'ready' });
+    show('s-live');
+  };
+
+  function startMeter() {
+    const buf = new Float32Array(analyser.fftSize);
+    setInterval(() => {
+      if (!active) { $('meter-i').style.height = '0%'; return; }
+      analyser.getFloatTimeDomainData(buf);
+      let s = 0; for (const x of buf) s += x * x;
+      const rms = Math.sqrt(s / buf.length) || 1e-6;
+      const v = Math.max(0, Math.min(1, (20 * Math.log10(rms) + 55) / 40)); // -55dB..-15dB
+      $('meter-i').style.height = (v * 100).toFixed(0) + '%';
+      wsend({ type: 'level', v: Math.round(v * 100) / 100 });
+    }, 100);
+  }
+
+  /* ---------- حالة اللعبة ---------- */
+  function onState(m) {
+    active = m.active;
+    if (track) track.enabled = active;
+    $('chip').textContent = active ? 'مفتوح' : 'مقفل';
+    $('chip').className = 'chip ' + (active ? 'on' : 'off');
+    $('meter').classList.toggle('off', !active);
+
+    const ids = new Set(m.peers.map(p => String(p.id)));
+    for (const [id, pr] of peers) if (!ids.has(id)) closePeer(id);
+    for (const p of m.peers) {
+      const id = String(p.id);
+      let pr = peers.get(id);
+      if (!pr && isInitiator(id) && Date.now() - (lastTry[id] || 0) > 2000) { lastTry[id] = Date.now(); pr = makePeer(id); offer(pr); }
+      pr = peers.get(id);
+      if (pr) { pr.name = p.name; pr.vol = p.vol; pr.gain.gain.setTargetAtTime(p.vol, ctx.currentTime, 0.15); }
+    }
+    renderPeers(m.peers);
+  }
+  const lastTry = {};
+  const isInitiator = (id) => BigInt(me.userId) < BigInt(id);
+
+  function renderPeers(list) {
+    const ul = $('peers'); ul.innerHTML = '';
+    $('no-peers').classList.toggle('hidden', list.length > 0);
+    for (const p of list) {
+      const li = document.createElement('li');
+      const n = document.createElement('span'); n.className = 'n'; n.textContent = p.name;
+      const v = document.createElement('span'); v.className = 'v';
+      const i = document.createElement('i'); i.style.width = Math.round(p.vol * 100) + '%'; v.appendChild(i);
+      li.append(n, v); ul.appendChild(li);
+    }
+  }
+
+  /* ---------- WebRTC (mesh للقريبين فقط) ---------- */
+  function makePeer(id) {
+    const pc = new RTCPeerConnection({ iceServers });
+    const gain = ctx.createGain(); gain.gain.value = 0; gain.connect(ctx.destination);
+    const el = new Audio(); el.muted = true; el.autoplay = true; // يضمن تدفق الصوت في Chrome
+    const pr = { pc, gain, el, q: Promise.resolve(), name: '', vol: 0 };
+    pc.addTrack(track, stream);
+    pc.onicecandidate = (e) => { if (e.candidate) wsend({ type: 'signal', to: id, data: { k: 'ice', c: e.candidate } }); };
+    pc.ontrack = (e) => {
+      const rs = e.streams[0] || new MediaStream([e.track]);
+      el.srcObject = rs; el.play().catch(() => {});
+      pr.src = ctx.createMediaStreamSource(rs); pr.src.connect(gain);
+    };
+    let t;
+    pc.onconnectionstatechange = () => {
+      clearTimeout(t);
+      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') closePeer(id);
+      else if (pc.connectionState === 'disconnected') t = setTimeout(() => closePeer(id), 6000);
+    };
+    peers.set(id, pr);
+    return pr;
+  }
+  async function offer(pr) {
+    const id = [...peers].find(([, v]) => v === pr)[0];
+    const o = await pr.pc.createOffer();
+    await pr.pc.setLocalDescription(o);
+    wsend({ type: 'signal', to: id, data: { k: 'offer', sdp: pr.pc.localDescription } });
+  }
+  function onSignal(from, d) {
+    const id = String(from);
+    if (!ctx || !track) return;
+    if (d.k === 'offer') { // عرض جديد = اتصال جديد
+      if (peers.has(id)) closePeer(id);
+      const pr = makePeer(id);
+      pr.q = pr.q.then(async () => {
+        await pr.pc.setRemoteDescription(d.sdp);
+        const a = await pr.pc.createAnswer();
+        await pr.pc.setLocalDescription(a);
+        wsend({ type: 'signal', to: id, data: { k: 'answer', sdp: pr.pc.localDescription } });
+      }).catch(() => closePeer(id));
+      return;
+    }
+    const pr = peers.get(id); if (!pr) return;
+    pr.q = pr.q.then(async () => {
+      if (d.k === 'answer') await pr.pc.setRemoteDescription(d.sdp);
+      else if (d.k === 'ice') await pr.pc.addIceCandidate(d.c);
+    }).catch(() => {});
+  }
+  function closePeer(id) {
+    const pr = peers.get(id); if (!pr) return;
+    peers.delete(id);
+    try { pr.src && pr.src.disconnect(); pr.gain.disconnect(); pr.pc.close(); pr.el.srcObject = null; } catch {}
+  }
+  function cleanup() {
+    for (const id of [...peers.keys()]) closePeer(id);
+    try { stream && stream.getTracks().forEach(t => t.stop()); } catch {}
+    try { ws && ws.close(); } catch {}
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>
