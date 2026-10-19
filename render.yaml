@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: mic-bridge
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /health
+    envVars:
+      - key: SHARED_SECRET
+        generateValue: true
