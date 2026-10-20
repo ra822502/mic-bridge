@@ -56,14 +56,14 @@ function pushState(jobId, max, callMap) {
       const inCall = !!(callMap && callMap.get(p.userId) && callMap.get(p.userId).has(q.userId));
       if (!inCall && d > max * 1.3) continue; // نبقي الاتصال قليلاً بعد الخروج من النطاق (hysteresis)
       let vol = 0;
-      const canHear = q.active && (p.active || HEAR_WHEN_MUTED);
+      const canHear = q.active && (p.active || p.rec || HEAR_WHEN_MUTED);
       if (canHear) {
         if (inCall) vol = 1;
         else if (d < max) vol = Math.round(Math.pow(1 - d / max, 1.5) * 100) / 100;
       }
       peers.push({ id: q.userId, name: q.displayName || q.name, vol, call: inCall });
     }
-    send(p.ws, { type: 'state', active: p.active, peers });
+    send(p.ws, { type: 'state', active: p.active, rec: !!p.rec, peers });
   }
 }
 
@@ -101,6 +101,7 @@ app.post('/api/sync', (req, res) => {
     p.displayName = String(d.displayName || d.name || '');
     p.pos = [Number(d.x) || 0, Number(d.y) || 0, Number(d.z) || 0];
     p.active = !!d.active;
+    p.rec = !!d.rec; // الجوال يطلب تسجيل الصوت
 
     if (typeof d.token === 'string' && d.token && d.token !== p.token) {
       if (p.token) tokens.delete(p.token);

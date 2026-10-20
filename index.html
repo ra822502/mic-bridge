@@ -51,6 +51,14 @@
   li span.v{width:64px; height:6px; border-radius:3px; background:#0c1322; overflow:hidden}
   li span.v i{display:block; height:100%; background:var(--accent); width:0%}
   .small{font-size:.85rem}
+  h2{font-size:1.05rem; margin:18px 0 4px; font-weight:700}
+  #recs li{flex-direction:column; align-items:stretch; gap:6px}
+  #recs audio{width:100%}
+  #recs .meta{display:flex; justify-content:space-between; gap:8px; font-size:.85rem; color:var(--mute)}
+  #recs a, #recs button.del{display:inline-block; width:auto; margin:0; padding:6px 12px; border-radius:8px; font-size:.85rem; font-weight:700; text-decoration:none}
+  #recs a{background:var(--accent); color:#06223a}
+  #recs button.del{background:transparent; color:var(--bad); border:1px solid var(--line)}
+  #rec-badge{margin-top:10px}
 </style>
 </head>
 <body>
@@ -87,6 +95,10 @@
     </div>
     <ul id="peers"></ul>
     <p class="small" id="no-peers">ما فيه أحد قريب منك الحين.</p>
+    <span class="chip off hidden" id="rec-badge">● جاري التسجيل</span>
+    <h2>التسجيلات الصوتية</h2>
+    <p class="small" id="no-recs">ما فيه تسجيلات. ابدأ التسجيل من تطبيق التسجيلات في الجوال داخل اللعبة.</p>
+    <ul id="recs"></ul>
   </section>
 
   <section id="s-err" class="card hidden">
@@ -108,6 +120,7 @@
 
   let ws, me, iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
   let ctx, stream, track, analyser, active = false;
+  let recDest, recorder = null, recChunks = [], recSpeakers = new Set(), recT0 = 0, recCount = 0;
   const peers = new Map(); // id -> {pc, gain, el, src, q, last, name}
 
   /* ---------- الشاشات ---------- */
@@ -166,6 +179,9 @@
     await ctx.resume();
     analyser = ctx.createAnalyser(); analyser.fftSize = 512;
     ctx.createMediaStreamSource(new MediaStream([track])).connect(analyser);
+    // تسجيل الصوت: نجمع صوتك مع أصوات القريبين (بعد ضبط الحجم حسب المسافة)
+    recDest = ctx.createMediaStreamDestination();
+    ctx.createMediaStreamSource(new MediaStream([track])).connect(recDest);
     startMeter();
     try { navigator.wakeLock && navigator.wakeLock.request('screen'); } catch {}
     wsend({ type: 'ready' });
@@ -192,6 +208,8 @@
     $('chip').textContent = active ? 'مفتوح' : 'مقفل';
     $('chip').className = 'chip ' + (active ? 'on' : 'off');
     $('meter').classList.toggle('off', !active);
+    if (typeof m.rec === 'boolean') setRecording(m.rec);
+    if (recorder) for (const p of m.peers) if (p.vol > 0) recSpeakers.add(p.name);
 
     const ids = new Set(m.peers.map(p => String(p.id)));
     for (const [id, pr] of peers) if (!ids.has(id)) closePeer(id);
@@ -222,7 +240,7 @@
   /* ---------- WebRTC (mesh للقريبين فقط) ---------- */
   function makePeer(id) {
     const pc = new RTCPeerConnection({ iceServers });
-    const gain = ctx.createGain(); gain.gain.value = 0; gain.connect(ctx.destination);
+    const gain = ctx.createGain(); gain.gain.value = 0; gain.connect(ctx.destination); if (recDest) gain.connect(recDest);
     const el = new Audio(); el.muted = true; el.autoplay = true; // يضمن تدفق الصوت في Chrome
     const pr = { pc, gain, el, q: Promise.resolve(), name: '', vol: 0 };
     pc.addTrack(track, stream);
@@ -272,7 +290,58 @@
     peers.delete(id);
     try { pr.src && pr.src.disconnect(); pr.gain.disconnect(); pr.pc.close(); pr.el.srcObject = null; } catch {}
   }
+  /* ---------- تسجيل الصوت ---------- */
+  function setRecording(on) {
+    if (on && !recorder && recDest) startRec();
+    else if (!on && recorder) stopRec();
+  }
+  function startRec() {
+    const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'];
+    const mimeType = types.find((t) => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || '';
+    let rec;
+    try { rec = new MediaRecorder(recDest.stream, mimeType ? { mimeType } : undefined); } catch { return; }
+    recorder = rec; recChunks = []; recSpeakers = new Set(); recT0 = Date.now();
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) recChunks.push(e.data); };
+    rec.onstop = () => {
+      const blob = new Blob(recChunks, { type: rec.mimeType || mimeType || 'audio/webm' });
+      addRecording(blob, Date.now() - recT0, [...recSpeakers]);
+      if (recorder === rec) recorder = null;
+    };
+    rec.start(1000);
+    $('rec-badge').classList.remove('hidden');
+    setTimeout(() => { if (recorder === rec) stopRec(); }, 20 * 60 * 1000); // حد أقصى 20 دقيقة
+  }
+  function stopRec() {
+    $('rec-badge').classList.add('hidden');
+    try { recorder && recorder.state !== 'inactive' && recorder.stop(); } catch {}
+  }
+  function addRecording(blob, ms, names) {
+    if (blob.size < 1000) return;
+    recCount++;
+    const url = URL.createObjectURL(blob);
+    const ext = blob.type.includes('mp4') ? 'm4a' : 'webm';
+    const sec = Math.round(ms / 1000);
+    const li = document.createElement('li');
+    const meta = document.createElement('div'); meta.className = 'meta';
+    const a1 = document.createElement('span');
+    a1.textContent = 'تسجيل ' + recCount + ' — ' + Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
+    const a2 = document.createElement('span');
+    a2.textContent = names.length ? names.join('، ') : 'بدون أصوات قريبة';
+    meta.append(a1, a2);
+    const audio = document.createElement('audio'); audio.controls = true; audio.src = url;
+    const row = document.createElement('div'); row.style.display = 'flex'; row.style.gap = '8px';
+    const dl = document.createElement('a'); dl.href = url; dl.download = 'recording-' + recCount + '.' + ext; dl.textContent = 'تحميل';
+    const del = document.createElement('button'); del.className = 'del'; del.textContent = 'حذف';
+    del.onclick = () => { URL.revokeObjectURL(url); li.remove(); $('no-recs').classList.toggle('hidden', $('recs').children.length > 0); };
+    row.append(dl, del);
+    li.append(meta, audio, row);
+    $('recs').prepend(li);
+    while ($('recs').children.length > 10) { $('recs').lastChild.remove(); }
+    $('no-recs').classList.add('hidden');
+  }
+
   function cleanup() {
+    try { recorder && recorder.state !== 'inactive' && recorder.stop(); } catch {}
     for (const id of [...peers.keys()]) closePeer(id);
     try { stream && stream.getTracks().forEach(t => t.stop()); } catch {}
     try { ws && ws.close(); } catch {}
