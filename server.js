@@ -45,18 +45,23 @@ function removePlayer(p, msg) {
   players.delete(p.key);
 }
 
-function pushState(jobId, max) {
+function pushState(jobId, max, callMap) {
   const list = [...players.values()].filter((p) => p.jobId === jobId && p.ws && p.ready);
   for (const p of list) {
     const peers = [];
     for (const q of list) {
       if (q === p) continue;
       const d = Math.hypot(p.pos[0] - q.pos[0], p.pos[1] - q.pos[1], p.pos[2] - q.pos[2]);
-      if (d > max * 1.3) continue; // نبقي الاتصال قليلاً بعد الخروج من النطاق (hysteresis)
+      // مكالمة جوال: يسمعون بعض مهما كانت المسافة
+      const inCall = !!(callMap && callMap.get(p.userId) && callMap.get(p.userId).has(q.userId));
+      if (!inCall && d > max * 1.3) continue; // نبقي الاتصال قليلاً بعد الخروج من النطاق (hysteresis)
       let vol = 0;
       const canHear = q.active && (p.active || HEAR_WHEN_MUTED);
-      if (canHear && d < max) vol = Math.round(Math.pow(1 - d / max, 1.5) * 100) / 100;
-      peers.push({ id: q.userId, name: q.displayName || q.name, vol });
+      if (canHear) {
+        if (inCall) vol = 1;
+        else if (d < max) vol = Math.round(Math.pow(1 - d / max, 1.5) * 100) / 100;
+      }
+      peers.push({ id: q.userId, name: q.displayName || q.name, vol, call: inCall });
     }
     send(p.ws, { type: 'state', active: p.active, peers });
   }
@@ -70,6 +75,17 @@ app.post('/api/sync', (req, res) => {
   const jobId = String(b.jobId || 'studio');
   const max = Math.min(Math.max(Number(b.maxDistance) || DEFAULT_MAX, 5), 500);
   jobs.set(jobId, { max, last: Date.now() });
+
+  // أزواج المكالمات من الجوال: [[userIdA, userIdB], ...]
+  const callMap = new Map(); // userId -> Set(userId)
+  for (const pair of Array.isArray(b.calls) ? b.calls : []) {
+    if (!Array.isArray(pair) || pair.length !== 2) continue;
+    const x = String(pair[0]), y = String(pair[1]);
+    if (!callMap.has(x)) callMap.set(x, new Set());
+    if (!callMap.has(y)) callMap.set(y, new Set());
+    callMap.get(x).add(y);
+    callMap.get(y).add(x);
+  }
 
   const seen = new Set();
   for (const d of Array.isArray(b.players) ? b.players : []) {
@@ -107,7 +123,7 @@ app.post('/api/sync', (req, res) => {
     out[p.userId] = { linked: !!p.ws, ready: !!(p.ws && p.ready), level: p.active ? Math.round(p.peak * 100) / 100 : 0 };
     p.peak = 0;
   }
-  pushState(jobId, max);
+  pushState(jobId, max, callMap);
   res.json({ ok: true, players: out });
 });
 
