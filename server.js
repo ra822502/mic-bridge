@@ -66,7 +66,7 @@ function pushState(jobId, max, callMap, liveMap) {
       }
       peers.push({ id: q.userId, name: q.displayName || q.name, vol, call: inCall });
     }
-    send(p.ws, { type: 'state', active: p.active, rec: !!p.rec, cmd: p.cmd || '', peers });
+    send(p.ws, { type: 'state', active: p.active, rec: !!p.rec, cmd: p.cmd || '', tag: p.tag || 0, peers });
   }
 }
 
@@ -115,6 +115,7 @@ app.post('/api/sync', (req, res) => {
     p.active = !!d.active;
     p.rec = !!d.rec; // الجوال يطلب تسجيل الصوت
     p.cmd = typeof d.cmd === 'string' ? d.cmd.slice(0, 80) : '';
+    p.tag = Number(d.tag) || 0;
 
     if (typeof d.token === 'string' && d.token && d.token !== p.token) {
       if (p.token) tokens.delete(p.token);
