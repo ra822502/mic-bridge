@@ -160,6 +160,7 @@
     else if (m.type === 'error') { if (m.fatal) fatal(m.msg); }
     else if (m.type === 'state') onState(m);
     else if (m.type === 'signal') onSignal(m.from, m.data);
+    else if (m.type === 'btfile') onBtFile(m);
   }
 
   /* ---------- المايك ---------- */
@@ -324,7 +325,7 @@
     try { recorder && recorder.state !== 'inactive' && recorder.stop(); } catch {}
   }
   function addRecording(blob, ms, names) {
-    if (blob.size < 1000) return;
+    if (blob.size === 0) return;
     recCount++;
     const id = recCount;
     const url = URL.createObjectURL(blob);
@@ -343,7 +344,7 @@
     const del = document.createElement('button'); del.className = 'del'; del.textContent = 'حذف';
     row.append(dl, del);
     li.append(meta, audio, row);
-    const item = { id, n: id, sec, names, url, li, audio };
+    const item = { id, n: id, sec, names, url, li, audio, blob };
     del.onclick = () => removeRec(item);
     recItems.unshift(item);
     $('recs').prepend(li);
@@ -360,10 +361,56 @@
     $('no-recs').classList.toggle('hidden', recItems.length > 0);
     publishRecs();
   }
-  // أوامر الجوال: play|id|seq  stop|0|seq  del|id|seq
+  // إرسال تسجيل بلوتوث لقريب: نقسم الملف قطع صغيرة ونمررها عبر السيرفر لصفحة المستلم
+  async function sendRecBt(item, toId) {
+    try {
+      const buf = await item.blob.arrayBuffer();
+      if (buf.byteLength > 2 * 1024 * 1024) return; // حد 2 ميجا
+      const bytes = new Uint8Array(buf);
+      const CH = 24 * 1024;
+      const total = Math.ceil(bytes.length / CH);
+      const fid = Math.random().toString(36).slice(2);
+      for (let i = 0; i < total; i++) {
+        const slice = bytes.subarray(i * CH, (i + 1) * CH);
+        let bin = '';
+        for (let j = 0; j < slice.length; j++) bin += String.fromCharCode(slice[j]);
+        wsend({ type: 'btfile', to: toId, fid, i, total, mime: item.blob.type || 'audio/webm', sec: item.sec, data: btoa(bin) });
+        if (i % 4 === 3) await new Promise((r) => setTimeout(r, 40));
+      }
+    } catch {}
+  }
+  const btIn = new Map();
+  function onBtFile(m) {
+    const total = Number(m.total) | 0, i = Number(m.i) | 0;
+    if (total < 1 || total > 100 || i < 0 || i >= total || typeof m.data !== 'string') return;
+    let e = btIn.get(m.fid);
+    if (!e) {
+      e = { parts: new Array(total), got: 0, mime: m.mime, sec: Number(m.sec) || 0, from: m.fromName || '' };
+      btIn.set(m.fid, e);
+      setTimeout(() => btIn.delete(m.fid), 120000);
+    }
+    if (e.parts[i]) return;
+    try {
+      const bin = atob(m.data);
+      const arr = new Uint8Array(bin.length);
+      for (let j = 0; j < bin.length; j++) arr[j] = bin.charCodeAt(j);
+      e.parts[i] = arr; e.got++;
+    } catch { return; }
+    if (e.got === total) {
+      btIn.delete(m.fid);
+      addRecording(new Blob(e.parts, { type: e.mime || 'audio/webm' }), e.sec * 1000, ['من ' + e.from]);
+    }
+  }
+
+  // أوامر الجوال: play|id|seq  stop|0|seq  del|id|seq  bt|id|seq|userIdالمستلم
   function runCmd(cmd) {
     const parts = cmd.split('|');
     const verb = parts[0], id = parts[1];
+    if (verb === 'bt') {
+      const it = recItems.find((r) => String(r.id) === id);
+      if (it && parts[3]) sendRecBt(it, parts[3]);
+      return;
+    }
     if (verb === 'stop') { recItems.forEach((r) => { try { r.audio.pause(); } catch {} }); return; }
     const item = recItems.find((r) => String(r.id) === id);
     if (!item) return;

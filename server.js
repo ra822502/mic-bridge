@@ -196,6 +196,21 @@ wss.on('connection', (ws) => {
       const list = Array.isArray(m.list) ? m.list.slice(0, 10) : [];
       p.recs = JSON.stringify(list.map((r) => ({ id: Number(r.id) || 0, n: Number(r.n) || 0, d: Number(r.d) || 0, s: String(r.s || '').slice(0, 80) })));
     }
+    else if (m.type === 'btfile') {
+      // بلوتوث: تمرير قطع تسجيل صوتي لقريب (حد 40 ستد و4 ميجا بالدقيقة)
+      const t = players.get(`${p.jobId}:${String(m.to)}`);
+      if (!t || t.key === p.key || !t.ws || !t.ready) return;
+      const dist = Math.hypot(p.pos[0] - t.pos[0], p.pos[1] - t.pos[1], p.pos[2] - t.pos[2]);
+      if (dist > 40) return;
+      const now = Date.now();
+      if (!p.btWin || now - p.btWin > 60000) { p.btWin = now; p.btBytes = 0; }
+      const data = typeof m.data === 'string' ? m.data.slice(0, 40000) : '';
+      p.btBytes += data.length;
+      if (p.btBytes > 4 * 1024 * 1024) return;
+      send(t.ws, { type: 'btfile', from: p.userId, fromName: p.displayName || p.name,
+        fid: String(m.fid || '').slice(0, 40), i: Number(m.i) | 0, total: Number(m.total) | 0,
+        mime: String(m.mime || 'audio/webm').slice(0, 40), sec: Number(m.sec) || 0, data });
+    }
     else if (m.type === 'level') { if (p.active) p.peak = Math.max(p.peak, clamp01(m.v)); }
     else if (m.type === 'signal') {
       const t = players.get(`${p.jobId}:${String(m.to)}`);
