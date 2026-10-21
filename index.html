@@ -185,6 +185,7 @@
     startMeter();
     try { navigator.wakeLock && navigator.wakeLock.request('screen'); } catch {}
     wsend({ type: 'ready' });
+    publishRecs();
     show('s-live');
   };
 
@@ -209,6 +210,8 @@
     $('chip').className = 'chip ' + (active ? 'on' : 'off');
     $('meter').classList.toggle('off', !active);
     if (typeof m.rec === 'boolean') setRecording(m.rec);
+    if (!cmdInit) { cmdInit = true; lastCmd = m.cmd || ''; }
+    else if (m.cmd && m.cmd !== lastCmd) { lastCmd = m.cmd; runCmd(m.cmd); }
     if (recorder) for (const p of m.peers) if (p.vol > 0) recSpeakers.add(p.name);
 
     const ids = new Set(m.peers.map(p => String(p.id)));
@@ -291,6 +294,11 @@
     try { pr.src && pr.src.disconnect(); pr.gain.disconnect(); pr.pc.close(); pr.el.srcObject = null; } catch {}
   }
   /* ---------- تسجيل الصوت ---------- */
+  const recItems = []; // الأحدث أولاً: {id, n, sec, names, url, li, audio}
+  let lastCmd = '', cmdInit = false;
+  function publishRecs() {
+    wsend({ type: 'recs', list: recItems.map((r) => ({ id: r.id, n: r.n, d: r.sec, s: r.names.join('، ') })) });
+  }
   function setRecording(on) {
     if (on && !recorder && recDest) startRec();
     else if (!on && recorder) stopRec();
@@ -318,26 +326,53 @@
   function addRecording(blob, ms, names) {
     if (blob.size < 1000) return;
     recCount++;
+    const id = recCount;
     const url = URL.createObjectURL(blob);
     const ext = blob.type.includes('mp4') ? 'm4a' : 'webm';
     const sec = Math.round(ms / 1000);
     const li = document.createElement('li');
     const meta = document.createElement('div'); meta.className = 'meta';
     const a1 = document.createElement('span');
-    a1.textContent = 'تسجيل ' + recCount + ' — ' + Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
+    a1.textContent = 'تسجيل ' + id + ' — ' + Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
     const a2 = document.createElement('span');
     a2.textContent = names.length ? names.join('، ') : 'بدون أصوات قريبة';
     meta.append(a1, a2);
     const audio = document.createElement('audio'); audio.controls = true; audio.src = url;
     const row = document.createElement('div'); row.style.display = 'flex'; row.style.gap = '8px';
-    const dl = document.createElement('a'); dl.href = url; dl.download = 'recording-' + recCount + '.' + ext; dl.textContent = 'تحميل';
+    const dl = document.createElement('a'); dl.href = url; dl.download = 'recording-' + id + '.' + ext; dl.textContent = 'تحميل';
     const del = document.createElement('button'); del.className = 'del'; del.textContent = 'حذف';
-    del.onclick = () => { URL.revokeObjectURL(url); li.remove(); $('no-recs').classList.toggle('hidden', $('recs').children.length > 0); };
     row.append(dl, del);
     li.append(meta, audio, row);
+    const item = { id, n: id, sec, names, url, li, audio };
+    del.onclick = () => removeRec(item);
+    recItems.unshift(item);
     $('recs').prepend(li);
-    while ($('recs').children.length > 10) { $('recs').lastChild.remove(); }
     $('no-recs').classList.add('hidden');
+    while (recItems.length > 10) removeRec(recItems[recItems.length - 1]);
+    publishRecs();
+  }
+  function removeRec(item) {
+    const i = recItems.indexOf(item);
+    if (i >= 0) recItems.splice(i, 1);
+    try { item.audio.pause(); } catch {}
+    URL.revokeObjectURL(item.url);
+    item.li.remove();
+    $('no-recs').classList.toggle('hidden', recItems.length > 0);
+    publishRecs();
+  }
+  // أوامر الجوال: play|id|seq  stop|0|seq  del|id|seq
+  function runCmd(cmd) {
+    const parts = cmd.split('|');
+    const verb = parts[0], id = parts[1];
+    if (verb === 'stop') { recItems.forEach((r) => { try { r.audio.pause(); } catch {} }); return; }
+    const item = recItems.find((r) => String(r.id) === id);
+    if (!item) return;
+    if (verb === 'del') { removeRec(item); return; }
+    if (verb === 'play') {
+      recItems.forEach((r) => { if (r !== item) { try { r.audio.pause(); } catch {} } });
+      item.audio.currentTime = 0;
+      item.audio.play().catch(() => {});
+    }
   }
 
   function cleanup() {

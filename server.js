@@ -45,7 +45,7 @@ function removePlayer(p, msg) {
   players.delete(p.key);
 }
 
-function pushState(jobId, max, callMap) {
+function pushState(jobId, max, callMap, liveMap) {
   const list = [...players.values()].filter((p) => p.jobId === jobId && p.ws && p.ready);
   for (const p of list) {
     const peers = [];
@@ -54,16 +54,19 @@ function pushState(jobId, max, callMap) {
       const d = Math.hypot(p.pos[0] - q.pos[0], p.pos[1] - q.pos[1], p.pos[2] - q.pos[2]);
       // مكالمة جوال: يسمعون بعض مهما كانت المسافة
       const inCall = !!(callMap && callMap.get(p.userId) && callMap.get(p.userId).has(q.userId));
-      if (!inCall && d > max * 1.3) continue; // نبقي الاتصال قليلاً بعد الخروج من النطاق (hysteresis)
+      // بث مباشر: المشاهد (p) يسمع صاحب البث (q) مهما كانت المسافة
+      const liveHear = !!(liveMap && liveMap.get(p.userId) && liveMap.get(p.userId).has(q.userId));
+      const liveLink = liveHear || !!(liveMap && liveMap.get(q.userId) && liveMap.get(q.userId).has(p.userId));
+      if (!inCall && !liveLink && d > max * 1.3) continue; // نبقي الاتصال قليلاً بعد الخروج من النطاق (hysteresis)
       let vol = 0;
-      const canHear = q.active && (p.active || p.rec || HEAR_WHEN_MUTED);
+      const canHear = q.active && (p.active || p.rec || HEAR_WHEN_MUTED || liveHear);
       if (canHear) {
-        if (inCall) vol = 1;
+        if (inCall || liveHear) vol = 1;
         else if (d < max) vol = Math.round(Math.pow(1 - d / max, 1.5) * 100) / 100;
       }
       peers.push({ id: q.userId, name: q.displayName || q.name, vol, call: inCall });
     }
-    send(p.ws, { type: 'state', active: p.active, rec: !!p.rec, peers });
+    send(p.ws, { type: 'state', active: p.active, rec: !!p.rec, cmd: p.cmd || '', peers });
   }
 }
 
@@ -75,6 +78,15 @@ app.post('/api/sync', (req, res) => {
   const jobId = String(b.jobId || 'studio');
   const max = Math.min(Math.max(Number(b.maxDistance) || DEFAULT_MAX, 5), 500);
   jobs.set(jobId, { max, last: Date.now() });
+
+  // مشاهدو البث: [[صاحب البث, المشاهد], ...]
+  const liveMap = new Map(); // listenerId -> Set(speakerId)
+  for (const pair of Array.isArray(b.lives) ? b.lives : []) {
+    if (!Array.isArray(pair) || pair.length !== 2) continue;
+    const sp = String(pair[0]), li = String(pair[1]);
+    if (!liveMap.has(li)) liveMap.set(li, new Set());
+    liveMap.get(li).add(sp);
+  }
 
   // أزواج المكالمات من الجوال: [[userIdA, userIdB], ...]
   const callMap = new Map(); // userId -> Set(userId)
@@ -102,6 +114,7 @@ app.post('/api/sync', (req, res) => {
     p.pos = [Number(d.x) || 0, Number(d.y) || 0, Number(d.z) || 0];
     p.active = !!d.active;
     p.rec = !!d.rec; // الجوال يطلب تسجيل الصوت
+    p.cmd = typeof d.cmd === 'string' ? d.cmd.slice(0, 80) : '';
 
     if (typeof d.token === 'string' && d.token && d.token !== p.token) {
       if (p.token) tokens.delete(p.token);
@@ -121,10 +134,10 @@ app.post('/api/sync', (req, res) => {
   const out = {};
   for (const p of players.values()) {
     if (p.jobId !== jobId) continue;
-    out[p.userId] = { linked: !!p.ws, ready: !!(p.ws && p.ready), level: p.active ? Math.round(p.peak * 100) / 100 : 0 };
+    out[p.userId] = { linked: !!p.ws, ready: !!(p.ws && p.ready), level: p.active ? Math.round(p.peak * 100) / 100 : 0, recs: p.recs || '[]' };
     p.peak = 0;
   }
-  pushState(jobId, max, callMap);
+  pushState(jobId, max, callMap, liveMap);
   res.json({ ok: true, players: out });
 });
 
@@ -179,6 +192,10 @@ wss.on('connection', (ws) => {
     if (!p || players.get(p.key) !== p) return;
 
     if (m.type === 'ready') p.ready = true;
+    else if (m.type === 'recs') {
+      const list = Array.isArray(m.list) ? m.list.slice(0, 10) : [];
+      p.recs = JSON.stringify(list.map((r) => ({ id: Number(r.id) || 0, n: Number(r.n) || 0, d: Number(r.d) || 0, s: String(r.s || '').slice(0, 80) })));
+    }
     else if (m.type === 'level') { if (p.active) p.peak = Math.max(p.peak, clamp01(m.v)); }
     else if (m.type === 'signal') {
       const t = players.get(`${p.jobId}:${String(m.to)}`);
@@ -187,7 +204,7 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
-    if (p && p.ws === ws) { p.ws = null; p.ready = false; p.peak = 0; }
+    if (p && p.ws === ws) { p.ws = null; p.ready = false; p.peak = 0; p.recs = '[]'; }
   });
 });
 
