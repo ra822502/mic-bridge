@@ -206,7 +206,7 @@
   /* ---------- حالة اللعبة ---------- */
   function onState(m) {
     active = m.active;
-    if (track) track.enabled = active;
+    if (track) track.enabled = active || !!m.tx; // يفتح المايك وقت ضغط زر الراديو
     $('chip').textContent = active ? 'مفتوح' : 'مقفل';
     $('chip').className = 'chip ' + (active ? 'on' : 'off');
     $('meter').classList.toggle('off', !active);

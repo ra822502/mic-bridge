@@ -57,16 +57,24 @@ function pushState(jobId, max, callMap, liveMap) {
       // بث مباشر: المشاهد (p) يسمع صاحب البث (q) مهما كانت المسافة
       const liveHear = !!(liveMap && liveMap.get(p.userId) && liveMap.get(p.userId).has(q.userId));
       const liveLink = liveHear || !!(liveMap && liveMap.get(q.userId) && liveMap.get(q.userId).has(p.userId));
-      if (!inCall && !liveLink && d > max * 1.3) continue; // نبقي الاتصال قليلاً بعد الخروج من النطاق (hysteresis)
+      // راديو: نفس الموجة = يسمعون بعض مهما كانت المسافة، لكن بس لما المتكلم يضغط زر الكلام
+      const sameRadio = !!(p.radio && p.radio === q.radio);
+      const radioHear = sameRadio && q.rtx;
+      if (!inCall && !liveLink && !sameRadio && d > max * 1.3) continue; // نبقي الاتصال قليلاً بعد الخروج من النطاق (hysteresis)
       let vol = 0;
-      const canHear = q.active && (p.active || p.rec || HEAR_WHEN_MUTED || liveHear);
-      if (canHear) {
-        if (inCall || liveHear) vol = 1;
-        else if (d < max) vol = Math.round(Math.pow(1 - d / max, 1.5) * 100) / 100;
+      if (radioHear) {
+        const rv = p.rvols && Number(p.rvols[q.userId]);
+        vol = Number.isFinite(rv) ? Math.max(0, Math.min(1, rv)) : 1;
+      } else {
+        const canHear = q.active && (p.active || p.rec || HEAR_WHEN_MUTED || liveHear);
+        if (canHear) {
+          if (inCall || liveHear) vol = 1;
+          else if (d < max) vol = Math.round(Math.pow(1 - d / max, 1.5) * 100) / 100;
+        }
       }
       peers.push({ id: q.userId, name: q.displayName || q.name, vol, call: inCall });
     }
-    send(p.ws, { type: 'state', active: p.active, rec: !!p.rec, cmd: p.cmd || '', tag: p.tag || 0, peers });
+    send(p.ws, { type: 'state', active: p.active, tx: !!p.rtx, rec: !!p.rec, cmd: p.cmd || '', tag: p.tag || 0, peers });
   }
 }
 
@@ -116,6 +124,9 @@ app.post('/api/sync', (req, res) => {
     p.rec = !!d.rec; // الجوال يطلب تسجيل الصوت
     p.cmd = typeof d.cmd === 'string' ? d.cmd.slice(0, 80) : '';
     p.tag = Number(d.tag) || 0;
+    p.radio = typeof d.radio === 'string' ? d.radio.slice(0, 12) : '';
+    p.rtx = !!d.rtx;
+    try { p.rvols = d.rvols ? JSON.parse(String(d.rvols).slice(0, 4000)) : {}; } catch { p.rvols = {}; }
 
     if (typeof d.token === 'string' && d.token && d.token !== p.token) {
       if (p.token) tokens.delete(p.token);
